@@ -1,0 +1,14 @@
+# Course materials (kept locally, not part of the project)
+References/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Local data produced by the app
+data/
+*.sqlite
+*.db
