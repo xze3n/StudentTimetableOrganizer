@@ -333,21 +333,23 @@ We run every experiment on the 10 development scenarios first. Before touching t
 
 ## 9. Week-by-week plan through Week 14
 
-| Week | Dates | Deliverables | Experiment/check |
-|---|---|---|---|
-| **7** | 9–13 Nov 2026 | Finalize the activity schema; build the UBB URL builder and an HTML fetch prototype; inspect one specialization/language/year across all its groups. | Compare parsed rows with the official pages by hand; check odd/even week mapping on sample activities. |
-| **8** | 16–20 Nov | Complete the HTML parser, SQLite cache, explicit refresh with snapshot diff, source metadata and parse validation. | Check required-field coverage and compare records from several groups and subgroups with the source. |
-| **9** | 23–27 Nov | Generate searchable text for activity records; set up Nomic in LM Studio and persistent Chroma; add the TF-IDF baseline and hybrid fusion; write the first 10 development scenarios. | Development-set Hit@3 for TF-IDF, vector and hybrid retrieval. |
-| **10** | 30 Nov–4 Dec | Implement the four MCP tools, the command-line chat loop, the structured request schema, the CP-SAT model and the independent validator. | Test conflict handling, fixed lectures, seminar/lab alternatives, refusals and validation against SQLite. |
-| **11** | 7–11 Dec | Connect Qwen 3.5 9B to the MCP server; add clarifying questions and citations; finish all 40 reviewed scenarios and the 10/30 split. | Model comparison (3 candidates) on the development set; choose the model. |
-| **12** | 14–18 Dec | **Progress review.** Finish basic RAG and the corrective RAG experiment; freeze the app path and experiment settings. | Compare retrieval and RAG variants on the development set; fix errors without looking at held-out answers. |
-| **Break** | 21 Dec 2026–3 Jan 2027 | No planned feature work; kept as a buffer. | — |
-| **13** | 4–8 Jan 2027 | Run the frozen system on the 30 held-out scenarios; analyze errors; optional calendar export. | Final held-out measurements: validity, constraints, retrieval, citations, latency. No tuning on these results. |
-| **14** | 11–15 Jan 2027 | Prepare and give the progress presentation; finish diagrams, reproducibility notes and documentation. | Present the architecture, measured results, limitations and next steps. |
+Each week's deliverables are due on the following Sunday at 00:00 (midnight between Saturday and Sunday), and are committed to the repository by then. Presentations take place at their scheduled session within the week.
+
+| Week | Dates | Deadline (00:00) | Deliverables | Experiment/check |
+|---|---|---|---|---|
+| **7** | 9–13 Nov 2026 | Sun 15 Nov 2026 | Finalize the activity schema; build the UBB URL builder and an HTML fetch prototype; inspect one specialization/language/year across all its groups. | Compare parsed rows with the official pages by hand; check odd/even week mapping on sample activities. |
+| **8** | 16–20 Nov | Sun 22 Nov | Complete the HTML parser, SQLite cache, explicit refresh with snapshot diff, source metadata and parse validation. | Check required-field coverage and compare records from several groups and subgroups with the source. |
+| **9** | 23–27 Nov | Sun 29 Nov | Generate searchable text for activity records; set up Nomic in LM Studio and persistent Chroma; add the TF-IDF baseline and hybrid fusion; write the first 10 development scenarios. | Development-set Hit@3 for TF-IDF, vector and hybrid retrieval. |
+| **10** | 30 Nov–4 Dec | Sun 6 Dec | Implement the four MCP tools, the command-line chat loop, the structured request schema, the CP-SAT model and the independent validator. | Test conflict handling, fixed lectures, seminar/lab alternatives, refusals and validation against SQLite. |
+| **11** | 7–11 Dec | Sun 13 Dec | Connect Qwen 3.5 9B to the MCP server; add clarifying questions and citations; finish all 40 reviewed scenarios and the 10/30 split. | Model comparison (3 candidates) on the development set; choose the model. |
+| **12** | 14–18 Dec | Sun 20 Dec | **Progress review.** Finish basic RAG and the corrective RAG experiment; freeze the app path and experiment settings. | Compare retrieval and RAG variants on the development set; fix errors without looking at held-out answers. |
+| **Break** | 21 Dec 2026–3 Jan 2027 | — | No planned feature work; kept as a buffer. | — |
+| **13** | 4–8 Jan 2027 | Sun 10 Jan 2027 | Run the frozen system on the 30 held-out scenarios; analyze errors; optional calendar export. | Final held-out measurements: validity, constraints, retrieval, citations, latency. No tuning on these results. |
+| **14** | 11–15 Jan 2027 | Sun 17 Jan 2027 | Prepare and give the progress presentation; finish diagrams, reproducibility notes and documentation. | Present the architecture, measured results, limitations and next steps. |
 
 ### What the repository will contain by Week 12
 
-By 18 Dec 2026 the repository will contain, each developed in its own commits:
+By Sunday 20 Dec 2026, 00:00, the repository will contain, each developed in its own commits:
 
 - `ingest/`: URL builder, HTML parser, SQLite schema, refresh with snapshot diff, and parser tests on saved pages.
 - `retrieval/`: TF-IDF, Chroma and hybrid retrievers, with the evaluation script and development-set results.
