@@ -333,9 +333,9 @@ We run every experiment on the 10 development scenarios first. Before touching t
 
 ## 9. Week-by-week plan through Week 14
 
-Each week's deliverables are due on the following Sunday at 00:00 (midnight between Saturday and Sunday), and are committed to the repository by then. Presentations take place at their scheduled session within the week.
+Each week's deliverables are due at the end of that week's Sunday, 23:59 (midnight between Sunday and Monday), and are committed to the repository by then. Presentations take place at their scheduled session within the week.
 
-| Week | Dates | Deadline (00:00) | Deliverables | Experiment/check |
+| Week | Dates | Deadline (Sun 23:59) | Deliverables | Experiment/check |
 |---|---|---|---|---|
 | **7** | 9–13 Nov 2026 | Sun 15 Nov 2026 | Finalize the activity schema; build the UBB URL builder and an HTML fetch prototype; inspect one specialization/language/year across all its groups. | Compare parsed rows with the official pages by hand; check odd/even week mapping on sample activities. |
 | **8** | 16–20 Nov | Sun 22 Nov | Complete the HTML parser, SQLite cache, explicit refresh with snapshot diff, source metadata and parse validation. | Check required-field coverage and compare records from several groups and subgroups with the source. |
@@ -349,7 +349,7 @@ Each week's deliverables are due on the following Sunday at 00:00 (midnight betw
 
 ### What the repository will contain by Week 12
 
-By Sunday 20 Dec 2026, 00:00, the repository will contain, each developed in its own commits:
+By Sunday 20 Dec 2026, 23:59, the repository will contain, each developed in its own commits:
 
 - `ingest/`: URL builder, HTML parser, SQLite schema, refresh with snapshot diff, and parser tests on saved pages.
 - `retrieval/`: TF-IDF, Chroma and hybrid retrievers, with the evaluation script and development-set results.
