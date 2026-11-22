@@ -38,7 +38,7 @@ class Activity:
     semester: int  # 1 or 2
     cohort_code: str  # page code, e.g. "I1"
     specialization: str  # e.g. "Informatica"
-    teaching_language: str  # e.g. "romana"
+    teaching_language: str  # e.g. "romana", or "germana si engleza" if bilingual
     study_year: int
     course_name: str
     activity_type: str  # Curs / Seminar / Laborator

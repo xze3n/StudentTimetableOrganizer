@@ -1,18 +1,22 @@
 """SQLite cache of official timetable snapshots.
 
-Each fetch of one cohort page produces a *snapshot*: the full set of activity
-records plus where and when they were fetched. Old snapshots are kept; exactly
-one snapshot per (academic year, semester, cohort) is active.
+Each successful fetch of a non-empty cohort page produces a *snapshot*: the full
+set of activity records plus where and when they were fetched. Old snapshots are
+kept; one snapshot per student context (academic year, semester, specialization,
+language, study year) is active, and at most one per page code.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import secrets
 import sqlite3
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .matching import best_match, context_key
 from .schema import Activity
 
 ACTIVITY_FIELDS = [f.name for f in fields(Activity)]
@@ -56,8 +60,9 @@ def now_utc() -> str:
 
 
 def content_hash(activities: list[Activity]) -> str:
-    ids = sorted(a.activity_id for a in activities)
-    return hashlib.sha1("\n".join(ids).encode()).hexdigest()[:12]
+    """Hash of every field, including metadata that is not part of activity_id."""
+    records = sorted(json.dumps(a.to_dict(), sort_keys=True) for a in activities)
+    return hashlib.sha1("\n".join(records).encode()).hexdigest()[:12]
 
 
 @dataclass(frozen=True)
@@ -119,12 +124,8 @@ class TimetableStore:
         self, academic_year: str, semester: int, specialization: str, teaching_language: str, study_year: int
     ) -> Snapshot | None:
         """Active snapshot for a student context, without knowing the page code."""
-        row = self.conn.execute(
-            "SELECT * FROM snapshots WHERE academic_year=? AND semester=? AND lower(specialization)=lower(?) "
-            "AND teaching_language=lower(?) AND study_year=? AND is_active=1",
-            (academic_year, semester, specialization, teaching_language, study_year),
-        ).fetchone()
-        return self._snapshot(row) if row else None
+        active = self._active_in_semester(academic_year, semester)
+        return best_match(active, specialization, teaching_language, study_year)
 
     def get_snapshot(self, snapshot_id: str) -> Snapshot | None:
         row = self.conn.execute("SELECT * FROM snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone()
@@ -132,7 +133,8 @@ class TimetableStore:
 
     def list_snapshots(self, academic_year: str, semester: int, cohort_code: str) -> list[Snapshot]:
         rows = self.conn.execute(
-            "SELECT * FROM snapshots WHERE academic_year=? AND semester=? AND cohort_code=? ORDER BY fetched_at",
+            "SELECT * FROM snapshots WHERE academic_year=? AND semester=? AND cohort_code=? "
+            "ORDER BY fetched_at, rowid",
             (academic_year, semester, cohort_code),
         ).fetchall()
         return [self._snapshot(r) for r in rows]
@@ -141,6 +143,9 @@ class TimetableStore:
         self, activities: list[Activity], *, source_url: str, fetched_at: str | None = None
     ) -> Snapshot:
         """Store a complete, already-validated set of records and make it active.
+
+        It replaces the active snapshot of the same student context, even if the
+        page code changed, and of the same page code, even if the context changed.
 
         Runs in one transaction: if anything fails, the previous active
         snapshot stays active and nothing partial is written.
@@ -157,7 +162,18 @@ class TimetableStore:
         fetched_at = fetched_at or now_utc()
         digest = content_hash(activities)
         stamp = fetched_at.replace("-", "").replace(":", "")[:15]
-        snapshot_id = f"{first.academic_year[:4]}-{first.semester}-{first.cohort_code}-{stamp}-{digest[:6]}"
+        # The random suffix keeps IDs unique when identical data is saved twice in one second.
+        snapshot_id = (
+            f"{first.academic_year[:4]}-{first.semester}-{first.cohort_code}-"
+            f"{stamp}-{digest[:6]}-{secrets.token_hex(4)}"
+        )
+        context = context_key(first.specialization, first.teaching_language, first.study_year)
+        replaced = [
+            (s.snapshot_id,)
+            for s in self._active_in_semester(first.academic_year, first.semester)
+            if s.cohort_code == first.cohort_code
+            or context_key(s.specialization, s.teaching_language, s.study_year) == context
+        ]
 
         cols = ["snapshot_id", "activity_id", *ACTIVITY_FIELDS]
         insert = (
@@ -165,9 +181,7 @@ class TimetableStore:
             f"VALUES ({', '.join('?' for _ in cols)})"
         )
         with self.conn:
-            self.conn.execute(
-                "UPDATE snapshots SET is_active=0 WHERE academic_year=? AND semester=? AND cohort_code=?", key
-            )
+            self.conn.executemany("UPDATE snapshots SET is_active=0 WHERE snapshot_id=?", replaced)
             self.conn.execute(
                 "INSERT INTO snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)",
                 (
@@ -182,12 +196,14 @@ class TimetableStore:
             )
         return self.get_snapshot(snapshot_id)
 
-    def mark_checked(self, snapshot_id: str, checked_at: str | None = None) -> None:
-        """Record that the source was re-checked and had not changed."""
-        with self.conn:
-            self.conn.execute(
-                "UPDATE snapshots SET checked_at=? WHERE snapshot_id=?", (checked_at or now_utc(), snapshot_id)
-            )
+    def _active_in_semester(self, academic_year: str, semester: int) -> list[Snapshot]:
+        """Active snapshots of one semester, newest first."""
+        rows = self.conn.execute(
+            "SELECT * FROM snapshots WHERE academic_year=? AND semester=? AND is_active=1 "
+            "ORDER BY fetched_at DESC, rowid DESC",
+            (academic_year, semester),
+        ).fetchall()
+        return [self._snapshot(r) for r in rows]
 
     # --- activities ---------------------------------------------------------
 
@@ -212,30 +228,41 @@ class TimetableStore:
 def diff_activities(old: list[Activity], new: list[Activity]) -> SnapshotDiff:
     """Compare two snapshots of the same cohort.
 
-    Records present in both are unchanged. Among the rest, an old and a new
-    record of the same course, activity type and formation are reported as
-    one *changed* activity (moved in time or room, or new teacher); anything
-    left over is added or removed.
+    Records with the same published details are unchanged, even if the page code
+    differs. Among the rest, an old and a new record of the same course, activity
+    type and audience can form one *changed* activity (moved in time or room, or
+    new teacher). The most similar records are paired first; anything left over
+    is added or removed.
     """
-    old_ids = {a.activity_id for a in old}
-    new_ids = {a.activity_id for a in new}
-    gone = [a for a in old if a.activity_id not in new_ids]
-    came = [a for a in new if a.activity_id not in old_ids]
 
     def ident(a: Activity) -> tuple:
-        return (a.formation, a.activity_type, a.course_name)
+        # A whole-cohort formation is the page code, which can be renamed.
+        formation = "" if a.formation == a.cohort_code else a.formation
+        return (formation, a.activity_type, a.course_name)
 
-    def order(a: Activity) -> tuple:
-        return (a.day, a.start_time, a.room)
+    def slot(a: Activity) -> tuple:
+        return (a.day, a.start_time, a.end_time)
+
+    def details(a: Activity) -> tuple:
+        return (*ident(a), *slot(a), a.room, a.teacher, a.frequency_label)
+
+    def similarity(a: Activity, b: Activity) -> tuple[int, bool]:
+        same_slot = slot(a) == slot(b)
+        same = [same_slot, a.room == b.room, a.teacher == b.teacher, a.frequency_label == b.frequency_label]
+        return sum(same), same_slot  # on a tie, prefer the one in the same slot
+
+    old_details = {details(a) for a in old}
+    new_details = {details(a) for a in new}
+    gone = sorted((a for a in old if details(a) not in new_details), key=details)
+    came = sorted((b for b in new if details(b) not in old_details), key=details)
+
+    candidates = [(a, b) for a in gone for b in came if ident(a) == ident(b)]
+    candidates.sort(key=lambda pair: similarity(*pair), reverse=True)
 
     changed: list[tuple[Activity, Activity]] = []
-    removed: list[Activity] = []
-    remaining = sorted(came, key=order)
-    for a in sorted(gone, key=order):
-        match = next((b for b in remaining if ident(b) == ident(a)), None)
-        if match is None:
-            removed.append(a)
-        else:
-            remaining.remove(match)
-            changed.append((a, match))
-    return SnapshotDiff(added=remaining, removed=removed, changed=changed)
+    for a, b in candidates:
+        if a in gone and b in came:
+            gone.remove(a)
+            came.remove(b)
+            changed.append((a, b))
+    return SnapshotDiff(added=came, removed=gone, changed=changed)

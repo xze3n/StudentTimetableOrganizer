@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 import requests
 
+from .matching import best_match
 from .parser import CohortLink, parse_cohort_page, parse_index
 from .schema import Activity
 from .urls import cohort_url, index_url
@@ -33,13 +34,9 @@ def get_page(url: str, timeout: float = 15.0) -> str:
 def find_cohort(
     links: list[CohortLink], specialization: str, teaching_language: str, study_year: int
 ) -> CohortLink:
-    for link in links:
-        if (
-            link.specialization.lower() == specialization.lower()
-            and link.teaching_language == teaching_language.lower()
-            and link.study_year == study_year
-        ):
-            return link
+    link = best_match(links, specialization, teaching_language, study_year)
+    if link:
+        return link
     available = sorted({f"{l.specialization} ({l.teaching_language})" for l in links})
     raise LookupError(
         f"no timetable for {specialization} / {teaching_language} / year {study_year}; "

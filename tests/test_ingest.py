@@ -1,6 +1,8 @@
 """Parser tests on saved copies of the official 2026-2027 semester I pages."""
 
+import re
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -146,3 +148,100 @@ def test_changed_layout_is_rejected(links):
     cohort = find_cohort(links, "Informatica", "romana", 1)
     with pytest.raises(ParseError):
         parse_cohort_page(html, academic_year="2026-2027", semester=1, cohort=cohort, source_url=SOURCE)
+
+
+# --- Incomplete, empty and unexpected pages -----------------------------------
+
+
+def parse_i1(links, html):
+    cohort = find_cohort(links, "Informatica", "romana", 1)
+    return parse_cohort_page(html, academic_year="2026-2027", semester=1, cohort=cohort, source_url=SOURCE)
+
+
+@pytest.mark.parametrize("formation", ["211/A", "211-1", "212 + 213", "I2", ""])
+def test_unknown_formation_is_rejected(links, formation):
+    html = read("I1.html").replace("211/2", formation)
+    with pytest.raises(ParseError, match="formation"):
+        parse_i1(links, html)
+
+
+@pytest.mark.parametrize("marker", ["</table>", "</html>"])
+def test_truncated_page_is_rejected(links, marker):
+    html = read("I1.html")
+    with pytest.raises(ParseError):
+        parse_i1(links, html[: html.index(marker)])
+
+
+def test_group_without_table_is_rejected(links):
+    html = re.sub(r"<table.*?</table>", "", read("I1.html"), count=1, flags=re.DOTALL)
+    with pytest.raises(ParseError, match="group headings"):
+        parse_i1(links, html)
+
+
+@pytest.mark.parametrize("name", ["2026-1/StEduID1.html", "2025-1/PDAE1.html"])
+def test_empty_timetable_has_no_activities(links, name):
+    html = (FIXTURES.parent / name).read_bytes().decode("iso-8859-2")
+    assert parse_i1(links, html) == []
+
+
+def test_page_without_timetable_is_rejected(links):
+    with pytest.raises(ParseError, match="no timetable tables"):
+        parse_i1(links, "<html><body><h1>Site in lucru</h1></body></html>")
+
+
+def test_unreadable_index_link_is_rejected():
+    html = read("index.html").replace('<a href="I1.html" >Anul 1</a>', '<a href="I1.html" >Anul I</a>')
+    with pytest.raises(ParseError, match="Anul I"):
+        parse_index(html)
+
+
+def test_every_link_in_an_index_cell_is_read():
+    link = '<a href="I1.html" >Anul 1</a>'
+    html = read("index.html").replace(link, link + '<a href="IX4.html" >Anul 4</a>')
+    assert "IX4" in {c.cohort_code for c in parse_index(html)}
+
+
+def test_truncated_index_is_rejected():
+    html = read("index.html")
+    with pytest.raises(ParseError, match="incomplete"):
+        parse_index(html[: len(html) // 2])
+
+
+# --- Matching what students type ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "specialization, language",
+    [
+        ("Informatica", "română"),
+        ("Informatică", "romana"),
+        ("  informatica ", "ROMÂNĂ"),
+        ("Computer Science", "Romanian"),
+    ],
+)
+def test_find_cohort_accepts_natural_input(links, specialization, language):
+    assert find_cohort(links, specialization, language, 1).cohort_code == "I1"
+
+
+def test_split_program_with_diacritics():
+    assert split_program("Informatică - în limba engleză") == ("Informatică", "engleza")
+    assert split_program("Ingineria Informației în limba maghiară") == ("Ingineria Informației", "maghiara")
+
+
+@pytest.mark.parametrize("language", ["germana", "engleza", "German", "germana si engleza", "engleză și germană"])
+def test_bilingual_programme_matches_either_language(links, language):
+    name = "Sisteme informatice avansate: modelare, proiectare, dezvoltare"
+    cohort = find_cohort(links, name, language, 1)
+    assert cohort.cohort_code == "MaSIA1"
+    assert cohort.teaching_language == "germana si engleza"
+
+
+@pytest.mark.parametrize("language, code", [("engleza", "IE1"), ("germana", "IG1")])
+def test_single_language_lines_stay_separate(links, language, code):
+    assert find_cohort(links, "Informatica", language, 1).cohort_code == code
+
+
+def test_exact_language_wins_over_bilingual(links):
+    english = find_cohort(links, "Informatica", "engleza", 1)
+    both = replace(english, teaching_language="germana si engleza", cohort_code="IGE1")
+    assert find_cohort([both, english], "Informatica", "engleza", 1) == english

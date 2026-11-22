@@ -4,8 +4,9 @@
 
 | Module | Purpose |
 |---|---|
-| `ingest/store.py` | SQLite store: `snapshots` and `activities` tables, one active snapshot per (academic year, semester, cohort), old snapshots kept, `diff_activities` between snapshots. |
+| `ingest/store.py` | SQLite store: `snapshots` and `activities` tables, one active snapshot per student context (academic year, semester, specialization, language, study year), old snapshots kept, `diff_activities` between snapshots. |
 | `ingest/cache.py` | `get_timetable(...)`: returns the cached snapshot, or fetches it; `refresh=True` re-fetches and reports what changed. CLI: `python -m ingest.cache 2026-2027 1 Informatica romana 1 [--refresh]`. |
+| `ingest/matching.py` | Matches student input to official names: ignores case, diacritics and extra spaces, accepts English language names and *Computer Science*, and matches a bilingual programme under either language. |
 | `ingest/check.py` | Semester-wide checks: required-field coverage, duplicate publications, overlaps for the same students. CLI: `python -m ingest.check 2026-2027 1`. |
 
 The database lives in `data/timetable.sqlite` (ignored by git).
@@ -15,14 +16,18 @@ The database lives in `data/timetable.sqlite` (ignored by git).
 | Situation | Result |
 |---|---|
 | Cached snapshot exists, no refresh | `cached`, no network access |
-| No cached snapshot | fetch, validate, store → `fetched` |
-| Refresh, same content | `unchanged`; only `checked_at` is updated, no new snapshot |
+| No cached snapshot, classes published | fetch, validate, store → `fetched` |
+| Refresh, same content | new active snapshot with a new `snapshot_id`, old one kept → `unchanged` |
 | Refresh, different content | new active snapshot, old one kept → `updated` with a diff (added / removed / changed) |
-| Refresh fails (network, changed layout, invalid row) | `fallback` to the cached snapshot, with the error and the cached fetch time |
+| Refresh fails (network, changed layout, incomplete page, invalid row, cohort missing from the index) | `fallback` to the cached snapshot, with the error and the cached fetch time |
 | No cache and the fetch fails | the error is raised |
-| Unknown programme or year | `LookupError` (not treated as a fetch failure) |
+| No cache and unknown programme or year | `LookupError` |
+| No cache and no classes published | `empty`; nothing is stored, so the next request checks the site again |
+| Refresh finds no classes | `fallback` to the cached snapshot, with a warning |
 
-A snapshot is written in one transaction, so a failed save never leaves partial data or removes the active snapshot. A *changed* activity in the diff is an old and a new record of the same course, activity type and formation (for example a lab moved to another room or time).
+A refresh that finds the same cohort under a new page code replaces the old active snapshot.
+
+A snapshot is written in one transaction, so a failed save never leaves partial data or removes the active snapshot. A *changed* activity in the diff is an old and a new record of the same course, activity type and formation (for example a lab moved to another room or time). When several records qualify, the most similar are paired first.
 
 ## Checks on 2026–2027 semester I
 
@@ -39,6 +44,14 @@ A snapshot is written in one transaction, so a failed save never leaves partial 
 
 The comparison with the source covers every group and subgroup, not just a sample; the 2 540 published rows collapse to 1 803 activities because lectures and other whole-cohort activities are repeated in each group's table.
 
+## Parser rules
+
+- A page must end with `</html>` and have one table per `Grupa` heading, otherwise it is rejected as incomplete.
+- A formation must be the page's cohort code or a group/subgroup number.
+- Every link in the index must be readable; none is skipped silently.
+- The site publishes empty timetables in two ways, both valid: group tables without rows (`StEduID1` in 2026-1) and a title without any groups (`PDAE1` in 2025-1).
+- The bilingual master's is stored with `teaching_language` = `germana si engleza`. Code that filters by language must use `ingest.matching`, not string equality.
+
 ## Finding: optional courses overlap with required ones
 
 The 302 overlaps are not data errors. They are mostly **optional courses** scheduled in parallel with required activities or with each other, for example:
@@ -53,4 +66,4 @@ The tabular pages do not mark which courses are optional. This affects the solve
 
 ## Tests
 
-`tests/test_store.py` (15 tests) covers the store round trip, cache hit without network, unchanged refresh, refresh with a moved lab and its diff, fallback on network failure and on a changed page layout, the no-cache error, 4-digit groups (saved `IA2.html`), and the validation report. Total: 36 tests, run with `python -m pytest`.
+`tests/test_store.py` covers the store round trip, cache hit without network, a new snapshot on every refresh, diffs, fallback, empty timetables, renamed page codes, metadata changes, 4-digit groups (saved `IA2.html`) and the validation report. `tests/test_ingest.py` covers URLs, parsing, incomplete and empty pages, and input matching. Total: 80 tests, run with `python -m pytest`.

@@ -21,21 +21,26 @@ DEFAULT_DB = Path("data") / "timetable.sqlite"
 
 @dataclass(frozen=True)
 class CacheResult:
-    status: str  # "cached" | "fetched" | "updated" | "unchanged" | "fallback"
-    snapshot: Snapshot
+    status: str  # "cached" | "fetched" | "updated" | "unchanged" | "fallback" | "empty"
+    snapshot: Snapshot | None  # None only when status is "empty"
     activities: list[Activity]
     diff: SnapshotDiff | None = None  # set when a refresh changed the data
-    error: str | None = None  # set on fallback: why the fetch failed
+    error: str | None = None  # set on fallback: why the cache could not be refreshed
+    source_url: str | None = None  # set on empty, when there is no snapshot to cite
 
     def describe(self) -> str:
         s = self.snapshot
+        if s is None:
+            return f"No classes are published yet at {self.source_url}; nothing was cached."
         base = f"{s.record_count} activities, snapshot {s.snapshot_id} (fetched {s.fetched_at})"
         if self.status == "fallback":
-            return f"Could not fetch the official timetable ({self.error}); using cached {base}."
+            return f"Could not refresh from the official timetable ({self.error}); using cached {base}."
         if self.status == "updated" and self.diff is not None:
+            if self.diff.is_empty:
+                return f"Timetable details updated, the classes are the same. Now {base}."
             return f"Timetable updated: {self.diff.summary()}. Now {base}."
         if self.status == "unchanged":
-            return f"Timetable unchanged since last fetch; {base}, checked {s.checked_at}."
+            return f"Timetable unchanged since last fetch; now {base}."
         return f"{self.status.capitalize()}: {base}."
 
 
@@ -54,9 +59,13 @@ def get_timetable(
 
     - No refresh and a cached snapshot exists: return it without network access.
     - Otherwise fetch and parse. The active snapshot is only replaced once the
-      new data has parsed and validated; identical data just updates checked_at.
-    - If fetching or parsing fails and a cached snapshot exists, fall back to it
-      and report the error; with no cache, the error is raised.
+      new data has parsed and validated; every successful refresh creates a new
+      snapshot, also when the data is identical.
+    - If fetching or parsing fails, or the cohort is no longer in the index, and
+      a cached snapshot exists, fall back to it and report the error; with no
+      cache, the error is raised.
+    - A page without classes is never stored: report "empty", or fall back to
+      the cached snapshot if there is one.
     """
     current = store.find_active(academic_year, semester, specialization, teaching_language, study_year)
     if current and not refresh:
@@ -68,9 +77,7 @@ def get_timetable(
             page_getter=page_getter,
         )
         url, activities = fetch_cohort(academic_year, semester, cohort, page_getter=page_getter)
-    except LookupError:
-        raise  # the programme/year does not exist: not a fetch failure
-    except Exception as exc:  # network error, changed layout, invalid data
+    except Exception as exc:  # network error, changed layout, invalid data, cohort not in the index
         if current is None:
             raise
         return CacheResult(
@@ -78,14 +85,20 @@ def get_timetable(
             error=f"{type(exc).__name__}: {exc}",
         )
 
-    if current and content_hash(activities) == current.content_hash:
-        store.mark_checked(current.snapshot_id)
-        current = store.get_snapshot(current.snapshot_id)
-        return CacheResult("unchanged", current, store.load_activities(current.snapshot_id))
+    if not activities:
+        if current is None:
+            return CacheResult("empty", None, [], source_url=url)
+        return CacheResult(
+            "fallback", current, store.load_activities(current.snapshot_id),
+            error=f"no classes are published at {url}",
+        )
 
     new = store.save_snapshot(activities, source_url=url, fetched_at=now_utc())
     if current is None:
         return CacheResult("fetched", new, store.load_activities(new.snapshot_id))
+    # Hash the stored records again: databases from older versions hashed only the IDs.
+    if content_hash(store.load_activities(current.snapshot_id)) == new.content_hash:
+        return CacheResult("unchanged", new, store.load_activities(new.snapshot_id))
     return CacheResult(
         "updated", new, store.load_activities(new.snapshot_id),
         diff=store.diff(current.snapshot_id, new.snapshot_id),

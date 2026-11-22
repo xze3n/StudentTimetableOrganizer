@@ -7,11 +7,12 @@ from pathlib import Path
 import pytest
 import requests
 
-from ingest.cache import get_timetable
+from ingest import cache
+from ingest.cache import CacheResult, get_timetable
 from ingest.check import validate_activities
 from ingest.fetch import find_cohort
 from ingest.parser import ParseError, parse_cohort_page, parse_index
-from ingest.store import TimetableStore, diff_activities
+from ingest.store import TimetableStore, content_hash, diff_activities
 
 FIXTURES = Path(__file__).parent / "fixtures" / "2026-1"
 BASE = "https://www.cs.ubbcluj.ro/files/orar/2026-1/tabelar/"
@@ -98,12 +99,18 @@ def test_second_load_uses_cache_without_network(store, site):
     assert site.calls == 0
 
 
-def test_refresh_unchanged_keeps_snapshot(store, site):
+def test_refresh_unchanged_creates_new_snapshot(store, site):
     first = load(store, site)
-    again = load(store, site, refresh=True)
-    assert again.status == "unchanged"
-    assert again.snapshot.snapshot_id == first.snapshot.snapshot_id
-    assert len(store.list_snapshots(YEAR, 1, "I1")) == 1
+    second = load(store, site, refresh=True)
+    third = load(store, site, refresh=True)  # normally within the same second
+    assert second.status == third.status == "unchanged"
+    ids = [r.snapshot.snapshot_id for r in (first, second, third)]
+    assert len(set(ids)) == 3
+
+    snaps = store.list_snapshots(YEAR, 1, "I1")
+    assert [s.snapshot_id for s in snaps] == ids
+    assert [s.is_active for s in snaps] == [False, False, True]
+    assert load(store, site).snapshot.snapshot_id == ids[-1]
 
 
 def test_refresh_with_changes_creates_new_snapshot_and_diff(store, site):
@@ -204,3 +211,155 @@ def test_odd_and_even_weeks_do_not_overlap(store, site):
     even = replace(lab, course_name="Alt curs", week_pattern="even", frequency_label="sapt. 2")
     report = validate_activities([odd, even])
     assert report.overlaps == []
+
+
+# --- empty timetables ---------------------------------------------------------
+
+
+def test_empty_timetable_is_reported_and_not_stored(store, site):
+    url = BASE + "StEduID1.html"
+    site.pages[url] = read("StEduID1.html")
+    args = (YEAR, 1, "Masterat didactic in Informatica", "romana", 1)
+    result = get_timetable(store, *args, page_getter=site)
+    assert (result.status, result.snapshot, result.activities) == ("empty", None, [])
+    assert result.source_url == url
+    assert "No classes" in result.describe() and url in result.describe()
+    assert store.list_snapshots(YEAR, 1, "StEduID1") == []
+
+    site.calls = 0
+    get_timetable(store, *args, page_getter=site)
+    assert site.calls == 2  # not cached, so the site is checked again
+
+
+def test_timetable_that_becomes_empty_keeps_cache(store, site):
+    first = load(store, site)
+    site.pages[BASE + "I1.html"] = read("StEduID1.html")
+    result = load(store, site, refresh=True)
+    assert result.status == "fallback"
+    assert "no classes" in result.error
+    assert result.snapshot == first.snapshot
+    assert len(result.activities) == 63
+
+
+def test_empty_timetable_is_stored_once_classes_appear(store, site):
+    page = site.pages[BASE + "I1.html"]
+    site.pages[BASE + "I1.html"] = read("StEduID1.html")
+    assert load(store, site).status == "empty"
+    site.pages[BASE + "I1.html"] = page
+    assert load(store, site).status == "fetched"
+
+
+def test_empty_timetable_cli(tmp_path, monkeypatch, capsys):
+    empty = CacheResult("empty", None, [], source_url="the-url")
+    monkeypatch.setattr(cache, "get_timetable", lambda *a, **kw: empty)
+    assert cache.main([YEAR, "1", "x", "romana", "1", "--db", str(tmp_path / "t.sqlite")]) == 0
+    assert "the-url" in capsys.readouterr().out
+
+
+# --- fallback -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "new_link, error",
+    [('<a href="I1.html" >Anul I</a>', "ParseError"), ("&nbsp;", "LookupError")],
+)
+def test_broken_index_falls_back_to_cache(store, site, new_link, error):
+    first = load(store, site)
+    index = BASE + "index.html"
+    site.pages[index] = site.pages[index].replace('<a href="I1.html" >Anul 1</a>', new_link)
+    result = load(store, site, refresh=True)
+    assert result.status == "fallback"
+    assert error in result.error
+    assert result.snapshot == first.snapshot
+
+
+def test_truncated_page_does_not_replace_cache(store, site):
+    first = load(store, site)
+    page = site.pages[BASE + "I1.html"]
+    site.pages[BASE + "I1.html"] = page[: page.index("</table>")]
+    result = load(store, site, refresh=True)
+    assert result.status == "fallback"
+    assert result.snapshot == first.snapshot
+
+
+# --- cache key and metadata ---------------------------------------------------
+
+
+def test_renamed_page_code_replaces_active_snapshot(store, site):
+    load(store, site)
+    index = BASE + "index.html"
+    site.pages[index] = site.pages[index].replace('href="I1.html"', 'href="I1A.html"')
+    site.pages[BASE + "I1A.html"] = read("I1.html").replace(">I1<", ">I1A<")
+
+    result = load(store, site, refresh=True)
+    assert result.status == "updated"
+    assert result.diff.is_empty  # same classes under a new code
+    assert "classes are the same" in result.describe()
+    assert store.active_snapshot(YEAR, 1, "I1") is None
+    assert load(store, site).snapshot.cohort_code == "I1A"
+
+
+def test_renamed_page_code_does_not_affect_other_cohorts(store, site):
+    other = get_timetable(store, YEAR, 1, "Inteligenta Artificiala", "engleza", 2, page_getter=site)
+    load(store, site)
+    load(store, site, refresh=True)
+    assert store.active_snapshot(YEAR, 1, "IA2") == other.snapshot
+
+
+@pytest.mark.parametrize(
+    "field, wrong", [("specialization", "INFORMATICA"), ("source_url", "https://old.example/I1.html")]
+)
+def test_metadata_fix_reaches_cache(store, site, field, wrong):
+    good = load(store, site).activities
+    store.save_snapshot([replace(a, **{field: wrong}) for a in good], source_url="old")
+
+    result = load(store, site, refresh=True)
+    assert result.status == "updated"
+    assert result.diff.is_empty
+    assert {getattr(a, field) for a in result.activities} == {getattr(good[0], field)}
+
+
+@pytest.mark.parametrize("field, value", [("teaching_language", "engleza"), ("study_year", 2)])
+def test_content_hash_covers_metadata(store, site, field, value):
+    acts = load(store, site).activities
+    assert content_hash(acts) != content_hash([replace(a, **{field: value}) for a in acts])
+
+
+def test_cache_accepts_natural_input(store, site):
+    load(store, site)
+    site.calls = 0
+    result = get_timetable(store, YEAR, 1, "Informatică", "română", 1, page_getter=site)
+    assert result.status == "cached"
+    assert site.calls == 0
+
+
+def test_bilingual_cache_hit_in_either_language(store, site):
+    acts = [replace(a, teaching_language="germana si engleza") for a in load(store, site).activities]
+    saved = store.save_snapshot(acts, source_url="x")
+    for language in ("germana", "English"):
+        assert store.find_active(YEAR, 1, "Informatica", language, 1) == saved
+
+
+# --- diff pairing -------------------------------------------------------------
+
+
+def test_diff_pairs_the_closest_match(store, site):
+    lab = load(store, site).activities[0]
+    monday = replace(lab, day="Monday", room="A")
+    tuesday = replace(lab, day="Tuesday", room="B")
+    new_room = replace(tuesday, room="C")
+    for old in ([monday, tuesday], [tuesday, monday]):
+        d = diff_activities(old, [new_room])
+        assert d.changed == [(tuesday, new_room)]
+        assert d.removed == [monday]
+        assert d.added == []
+
+
+def test_diff_prefers_moved_class_over_unrelated_one_in_its_new_slot(store, site):
+    lab = load(store, site).activities[0]
+    moving = replace(lab, day="Monday", room="A", teacher="T1")
+    cancelled = replace(lab, day="Tuesday", room="B", teacher="T2")
+    moved = replace(moving, day="Tuesday")
+    d = diff_activities([moving, cancelled], [moved])
+    assert d.changed == [(moving, moved)]
+    assert d.removed == [cancelled]
