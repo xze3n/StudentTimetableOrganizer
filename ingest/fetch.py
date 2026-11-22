@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from collections.abc import Callable
 
 import requests
 
@@ -46,15 +47,39 @@ def find_cohort(
     )
 
 
+def resolve_cohort(
+    academic_year: str,
+    semester: int,
+    specialization: str,
+    teaching_language: str,
+    study_year: int,
+    *,
+    page_getter: Callable[[str], str] = get_page,
+) -> CohortLink:
+    links = parse_index(page_getter(index_url(academic_year, semester)))
+    return find_cohort(links, specialization, teaching_language, study_year)
+
+
+def fetch_cohort(
+    academic_year: str,
+    semester: int,
+    cohort: CohortLink,
+    *,
+    page_getter: Callable[[str], str] = get_page,
+) -> tuple[str, list[Activity]]:
+    """Fetch and parse one cohort page; returns (source URL, activities)."""
+    url = cohort_url(academic_year, semester, cohort.cohort_code)
+    activities = parse_cohort_page(
+        page_getter(url), academic_year=academic_year, semester=semester, cohort=cohort, source_url=url
+    )
+    return url, activities
+
+
 def fetch_timetable(
     academic_year: str, semester: int, specialization: str, teaching_language: str, study_year: int
 ) -> list[Activity]:
-    links = parse_index(get_page(index_url(academic_year, semester)))
-    cohort = find_cohort(links, specialization, teaching_language, study_year)
-    url = cohort_url(academic_year, semester, cohort.cohort_code)
-    return parse_cohort_page(
-        get_page(url), academic_year=academic_year, semester=semester, cohort=cohort, source_url=url
-    )
+    cohort = resolve_cohort(academic_year, semester, specialization, teaching_language, study_year)
+    return fetch_cohort(academic_year, semester, cohort)[1]
 
 
 def main(argv: list[str] | None = None) -> int:
